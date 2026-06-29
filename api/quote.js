@@ -44,6 +44,37 @@ function isDomestic(sym) {
   return /^\d{6}$/.test(sym);
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 일시적 실패(레이트리밋 등) 대비 지수 백오프 재시도
+async function withRetry(fn, { retries = 2, baseDelay = 350 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) await sleep(baseDelay * Math.pow(2, attempt));
+    }
+  }
+  throw lastErr;
+}
+
+// 동시 실행 개수 제한 — KIS는 초당 호출 제한이 있어 과도한 병렬 호출 시 일부 종목이 누락됨
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const n = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: n }, worker));
+  return results;
+}
+
 // ── 국내 현재가 ──
 async function quoteDomestic(sym, token, appkey, appsecret) {
   const url = new URL(`${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price`);
@@ -100,12 +131,16 @@ async function quoteOverseas(sym, token, appkey, appsecret) {
       const last = o ? parseFloat(o.last) : NaN;
 
       if (j.rt_cd === '0' && o && last > 0) {
+        // KIS 해외 diff(전일대비)는 절대값만 내려옴 → 등락률 rate의 부호를 입혀 실제 등락폭으로 환산
+        const rate = parseFloat(o.rate);
+        const diffAbs = Math.abs(parseFloat(o.diff));
+        const change = Number.isFinite(rate) && rate < 0 ? -diffAbs : diffAbs;
         return {
           symbol: sym,
           name: sym,
           price: last,
-          change: parseFloat(o.diff),
-          changePct: parseFloat(o.rate),
+          change,
+          changePct: rate,
           currency: 'USD',
           market: excd,
         };
@@ -150,18 +185,20 @@ module.exports = async (req, res) => {
     const appsecret = process.env.KIS_APPSECRET;
     const token = await getToken();
 
-    // 여러 심볼 병렬 조회 — 한 종목 실패해도 나머지는 반환
-    const settled = await Promise.all(
-      symbols.map(async (sym) => {
-        try {
-          return isDomestic(sym)
-            ? await quoteDomestic(sym, token, appkey, appsecret)
-            : await quoteOverseas(sym, token, appkey, appsecret);
-        } catch (e) {
-          return { symbol: sym, error: (e && e.message) || String(e) };
-        }
-      })
-    );
+    // 여러 심볼 조회 — 동시 호출 수를 제한하고(레이트리밋 회피) 실패 시 재시도.
+    // 한 종목이 끝까지 실패해도 나머지는 정상 반환.
+    const CONCURRENCY = 4;
+    const settled = await mapLimit(symbols, CONCURRENCY, async (sym) => {
+      try {
+        return await withRetry(() =>
+          isDomestic(sym)
+            ? quoteDomestic(sym, token, appkey, appsecret)
+            : quoteOverseas(sym, token, appkey, appsecret)
+        );
+      } catch (e) {
+        return { symbol: sym, error: (e && e.message) || String(e) };
+      }
+    });
 
     const quotes = settled.filter((q) => q && !q.error);
 
