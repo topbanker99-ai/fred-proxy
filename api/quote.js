@@ -178,6 +178,76 @@ async function quoteOverseas(sym, token, appkey, appsecret) {
   throw new Error('해외 조회 실패(NAS/NYS/AMS 모두): ' + lastErr);
 }
 
+// ── 일봉 캔들 (3개월 추이 차트용) ──
+// 반환: [{ t: 'YYYYMMDD', c: 종가 }] (오래된→최신 순)
+function ymd(d) {
+  return (
+    d.getFullYear() +
+    String(d.getMonth() + 1).padStart(2, '0') +
+    String(d.getDate()).padStart(2, '0')
+  );
+}
+
+async function candlesDomestic(sym, token, appkey, appsecret, days) {
+  const end = ymd(new Date());
+  // 영업일 기준 days개를 확보하려 달력일은 넉넉히(주말·공휴일 보정)
+  const start = ymd(new Date(Date.now() - Math.ceil(days * 1.7) * 86400000));
+  const url = new URL(`${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`);
+  url.searchParams.set('FID_COND_MRKT_DIV_CODE', 'J');
+  url.searchParams.set('FID_INPUT_ISCD', sym);
+  url.searchParams.set('FID_INPUT_DATE_1', start);
+  url.searchParams.set('FID_INPUT_DATE_2', end);
+  url.searchParams.set('FID_PERIOD_DIV_CODE', 'D'); // 일봉
+  url.searchParams.set('FID_ORG_ADJ_PRC', '0'); // 0=수정주가
+
+  const r = await fetch(url, {
+    headers: { authorization: `Bearer ${token}`, appkey, appsecret, tr_id: 'FHKST03010100', custtype: 'P' },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (j.rt_cd !== '0' || !Array.isArray(j.output2)) {
+    throw new Error('국내 캔들 실패: ' + (j.msg1 || ('rt_cd ' + j.rt_cd)));
+  }
+  const rows = j.output2
+    .filter((o) => o && o.stck_bsop_date && o.stck_clpr)
+    .map((o) => ({ t: o.stck_bsop_date, c: parseFloat(o.stck_clpr) }))
+    .filter((x) => x.c > 0)
+    .sort((a, b) => (a.t < b.t ? -1 : 1));
+  return rows.slice(-days);
+}
+
+async function candlesOverseas(sym, token, appkey, appsecret, days) {
+  let lastErr = '';
+  for (const excd of OVERSEAS_EXCD) {
+    try {
+      const url = new URL(`${KIS_BASE}/uapi/overseas-price/v1/quotations/dailyprice`);
+      url.searchParams.set('AUTH', '');
+      url.searchParams.set('EXCD', excd);
+      url.searchParams.set('SYMB', sym);
+      url.searchParams.set('GUBN', '0'); // 0=일봉
+      url.searchParams.set('BYMD', ''); // 기준일 공란=오늘
+      url.searchParams.set('MODP', '1'); // 수정주가 반영
+
+      const r = await fetch(url, {
+        headers: { authorization: `Bearer ${token}`, appkey, appsecret, tr_id: 'HHDFS76240000', custtype: 'P' },
+      });
+      const j = await r.json().catch(() => ({}));
+      const arr = j.output2;
+      if (j.rt_cd === '0' && Array.isArray(arr) && arr.length) {
+        const rows = arr
+          .filter((o) => o && o.xymd && o.clos)
+          .map((o) => ({ t: o.xymd, c: parseFloat(o.clos) }))
+          .filter((x) => x.c > 0)
+          .sort((a, b) => (a.t < b.t ? -1 : 1));
+        if (rows.length) return rows.slice(-days);
+      }
+      lastErr = j.msg1 || ('rt_cd ' + j.rt_cd);
+    } catch (e) {
+      lastErr = (e && e.message) || String(e);
+    }
+  }
+  throw new Error('해외 캔들 실패(NAS/NYS/AMS 모두): ' + lastErr);
+}
+
 module.exports = async (req, res) => {
   // ── CORS ──
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -191,11 +261,33 @@ module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   try {
+    // 파라미터 파싱 (req.query 우선, URL 폴백)
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const get = (k) => (req.query && req.query[k] != null ? req.query[k] : params.get(k));
+    const type = String(get('type') || '').toLowerCase();
+
+    // ── 일봉 캔들 모드: /api/quote?type=candles&symbol=AAPL&days=90 ──
+    if (type === 'candles') {
+      const symbol = String(get('symbol') || '').trim().toUpperCase();
+      const days = Math.min(400, Math.max(5, parseInt(get('days'), 10) || 90));
+      if (!symbol) {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ ok: false, error: 'symbol 파라미터가 필요합니다 (예: ?type=candles&symbol=AAPL)' }));
+      }
+      const appkey = process.env.KIS_APPKEY;
+      const appsecret = process.env.KIS_APPSECRET;
+      const token = await getToken();
+      const candles = await withRetry(() =>
+        isDomestic(symbol)
+          ? candlesDomestic(symbol, token, appkey, appsecret, days)
+          : candlesOverseas(symbol, token, appkey, appsecret, days)
+      );
+      res.statusCode = 200;
+      return res.end(JSON.stringify({ ok: true, symbol, candles, ts: Date.now() }));
+    }
+
     // symbols 파라미터 파싱 (req.query 우선, URL 폴백)
-    const raw =
-      (req.query && req.query.symbols) ||
-      new URL(req.url, 'http://localhost').searchParams.get('symbols') ||
-      '';
+    const raw = get('symbols') || '';
     const symbols = String(raw)
       .split(',')
       .map((s) => s.trim().toUpperCase())
