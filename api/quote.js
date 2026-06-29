@@ -75,6 +75,31 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
+// 국내 종목 한글명 폴백 — KIS inquire-price의 hts_kor_isnm가 비어 오는 경우가 있어
+// 자주 쓰는 종목은 코드→한글명을 직접 매핑한다(있으면 API값 우선, 없으면 이 표, 그래도 없으면 코드).
+const KR_NAME = {
+  '005930': '삼성전자',
+  '000660': 'SK하이닉스',
+  '035420': 'NAVER',
+  '035720': '카카오',
+  '005380': '현대차',
+  '000270': '기아',
+  '005490': 'POSCO홀딩스',
+  '051910': 'LG화학',
+  '006400': '삼성SDI',
+  '207940': '삼성바이오로직스',
+  '068270': '셀트리온',
+  '012330': '현대모비스',
+  '028260': '삼성물산',
+  '105560': 'KB금융',
+  '055550': '신한지주',
+  '086790': '하나금융지주',
+  '003550': 'LG',
+  '015760': '한국전력',
+  '034730': 'SK',
+  '066570': 'LG전자',
+};
+
 // ── 국내 현재가 ──
 async function quoteDomestic(sym, token, appkey, appsecret) {
   const url = new URL(`${KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-price`);
@@ -96,7 +121,7 @@ async function quoteDomestic(sym, token, appkey, appsecret) {
 
   return {
     symbol: sym,
-    name: o.hts_kor_isnm || sym,
+    name: o.hts_kor_isnm || KR_NAME[sym] || sym,
     price: parseFloat(o.stck_prpr),
     change: parseFloat(o.prdy_vrss),
     changePct: parseFloat(o.prdy_ctrt),
