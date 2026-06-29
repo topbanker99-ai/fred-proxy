@@ -15,7 +15,15 @@ async function getToken() {
 
   const appkey = process.env.KIS_APPKEY;
   const appsecret = process.env.KIS_APPSECRET;
-  if (!appkey || !appsecret) throw new Error('KIS_APPKEY/KIS_APPSECRET 환경변수가 설정되지 않았습니다');
+  if (!appkey || !appsecret) {
+    // 진단(값 노출 없음): 런타임에 보이는 KIS 관련 변수 이름만 표기
+    const seen = Object.keys(process.env).filter((k) => /KIS/i.test(k));
+    throw new Error(
+      'KIS_APPKEY/KIS_APPSECRET 미설정 — ' +
+        'KIS_APPKEY=' + (appkey ? 'OK' : 'X') + ', KIS_APPSECRET=' + (appsecret ? 'OK' : 'X') +
+        ', 보이는 KIS 변수: [' + (seen.length ? seen.join(', ') : '없음') + ']'
+    );
+  }
 
   const r = await fetch(`${KIS_BASE}/oauth2/tokenP`, {
     method: 'POST',
