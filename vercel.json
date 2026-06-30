@@ -1,3 +1,3 @@
 {
-  "functions": { "api/fred.js": { "maxDuration": 10 }, "api/quote.js": { "maxDuration": 15 } }
+  "functions": { "api/fred.js": { "maxDuration": 10 }, "api/quote.js": { "maxDuration": 15 }, "api/indices.js": { "maxDuration": 15 } }
 }
