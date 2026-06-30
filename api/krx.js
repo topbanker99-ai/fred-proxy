@@ -39,22 +39,32 @@ module.exports = async (req, res) => {
     if (!sp.has('pageNo')) sp.set('pageNo', '1');
     sp.set('resultType', 'json');
 
-    // Decoding 키(원본)면 인코딩, Encoding 키(이미 %포함)면 그대로
-    const keyParam = raw.indexOf('%') >= 0 ? raw : encodeURIComponent(raw);
-    const url = `${BASE}/${op}?serviceKey=${keyParam}&${sp.toString()}`;
+    // 키 형태를 모를 수 있으니 두 가지 serviceKey 후보를 순차 시도
+    let decoded = raw;
+    try { if (raw.indexOf('%') >= 0) decoded = decodeURIComponent(raw); } catch (e) {}
+    const candidates = [
+      ['encoded', encodeURIComponent(decoded)], // Decoding 원본 → 인코딩
+      ['asis', raw],                            // 입력값 그대로(이미 Encoding 키인 경우)
+    ];
 
-    const r = await fetch(url, { headers: { accept: 'application/json' } });
-    const text = await r.text();
-    let j;
-    try { j = JSON.parse(text); }
-    catch (e) {
-      // 인증 오류 등은 XML로 오기도 함 → 원문 일부를 진단으로 전달
-      res.statusCode = 200;
-      return res.end(JSON.stringify({ ok: false, error: '비JSON 응답(인증/활용신청 확인 필요)', status: r.status, raw: text.slice(0, 400) }));
+    const attempts = [];
+    for (const [label, keyParam] of candidates) {
+      const url = `${BASE}/${op}?serviceKey=${keyParam}&${sp.toString()}`;
+      let status = 0, text = '';
+      try { const r = await fetch(url, { headers: { accept: 'application/json' } }); status = r.status; text = await r.text(); }
+      catch (e) { attempts.push({ label, status: 'fetch_err', msg: String(e).slice(0, 120) }); continue; }
+      let j = null; try { j = JSON.parse(text); } catch (e) {}
+      const hdr = j && j.response && j.response.header;
+      if (j && hdr && (hdr.resultCode === '00' || /NORMAL/i.test(hdr.resultMsg || ''))) {
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1200');
+        res.statusCode = 200;
+        return res.end(JSON.stringify(j));
+      }
+      attempts.push({ label, status, resultMsg: hdr ? hdr.resultMsg : null, raw: j ? null : text.slice(0, 160) });
     }
-    res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1200');
+    // 모두 실패 → 진단(키는 노출 안 함)
     res.statusCode = 200;
-    res.end(JSON.stringify(j));
+    res.end(JSON.stringify({ ok: false, error: '주식시세 호출 실패 — 활용신청 승인/키 확인 필요', keyLen: raw.length, keyHasPercent: raw.indexOf('%') >= 0, attempts }));
   } catch (e) {
     res.statusCode = 500;
     res.end(JSON.stringify({ ok: false, error: (e && e.message) || String(e) }));
