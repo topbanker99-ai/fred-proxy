@@ -86,7 +86,8 @@ module.exports = async (req, res) => {
       }));
       // 3) 예탁결제원(SEIBRO) 증권대차서비스 — 별도 호스트, XML. 파라미터 오류라도 키가 등록됐으면 approved.
       const seibro = await Promise.all([
-        ['증권대차_종목별대차거래', 'https://api.seibro.or.kr/openapi/service/SlbSvc/getSlbDealingByIsin'],
+        ['증권대차_종목별대차거래(GW)', 'https://apis.data.go.kr/B552481/SlbSvc/getSlbDealingByIsin'],
+        ['증권대차_주식대차순위(GW)', 'https://apis.data.go.kr/B552481/SlbSvc/getSlbStockRank'],
       ].map(async ([name, url]) => {
         const r = await callGoKr(`${url}?serviceKey=${keyParam}&numOfRows=1`, 6000);
         return { service: name, host: 'api.seibro.or.kr', op: url.split('/').pop(), approved: r.keyOk, resultCode: r.resultCode, msg: (r.resultMsg || '').slice(0, 90) };
