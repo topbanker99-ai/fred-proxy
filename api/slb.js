@@ -5,11 +5,12 @@
 //   - 응답은 XML → 브라우저에서 DOMParser로 파싱 (raw XML 반환)
 //   - fred.js / quote.js / indices.js / kr.js / krx.js 와 독립.
 
-const BASE = 'https://api.seibro.or.kr/openapi/service/SlbSvc';
+// data.go.kr 예탁결제원 GW(15157426) — 구 seibro 직접주소(15001149)는 삭제됨
+const BASE = 'https://apis.data.go.kr/B552481/SlbSvc';
 const ALLOWED_OP = [
   'getSlbDealingByIsin',   // 종목별 대차거래(체결·상환·잔고)
-  'getSlbBySctnList',      // (예비) 종목별 대차거래 목록
-  'getSlbStatByIsin',      // (예비) 종목별 대차 통계
+  'getSlbStockRank',       // 주식 대차 체결 상위종목
+  'getSlbBondRank',        // 채권 대차 체결 상위종목
 ];
 // SEIBRO SlbSvc가 받는 표준 파라미터(널리 쓰이는 후보) — 값이 있으면 그대로 전달
 const PASS = ['numOfRows', 'pageNo', 'isin', 'inputDataType', 'pdStrtDd', 'pdEndDd', 'basDd', 'stdDt', 'startDate', 'endDate', 'caltotMartTpcd', 'menuNo'];
@@ -61,7 +62,7 @@ module.exports = async (req, res) => {
       } catch (e) { lastText = String(e).slice(0, 160); lastStatus = 0; continue; }
       lastText = text; lastStatus = status;
       // 키 미등록이면 다음 후보 시도; 정상/파라미터오류면 그대로 반환
-      if (/NOT.?REGISTERED|SERVICE.?KEY|등록되지/i.test(text)) continue;
+      if (/NOT.?REGISTERED|SERVICE.?KEY|등록되지|Unauthorized|LIMITED_NUMBER/i.test(text)) continue;
       res.setHeader('Content-Type', 'application/xml; charset=utf-8');
       res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600');
       res.statusCode = 200;
