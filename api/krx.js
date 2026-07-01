@@ -61,17 +61,17 @@ module.exports = async (req, res) => {
     // ── 진단 모드: /api/krx?probe=1 — 금융위 계열 서비스별 키 승인 여부 확인 ──
     if (get('probe')) {
       const cands = keyCandidates(raw);
-      const results = [];
-      for (const [name, path] of PROBE_SERVICES) {
+      // 서비스별로 키 후보를 순차 시도하되, 서비스들은 병렬(Promise.all)로 — 15초 내 완료
+      const results = await Promise.all(PROBE_SERVICES.map(async ([name, path]) => {
         let best = null;
         for (const [label, keyParam] of cands) {
           const url = `${ROOT}/${path}?serviceKey=${keyParam}&numOfRows=1&pageNo=1&resultType=json`;
           const r = await callGoKr(url);
-          if (r.ok) { best = { approved: true, via: label, msg: r.resultMsg }; break; }
-          if (!best) best = { approved: false, via: label, status: r.status, msg: r.resultMsg };
+          if (r.ok) { best = { approved: true, msg: r.resultMsg }; break; }
+          if (!best) best = { approved: false, msg: r.resultMsg };
         }
-        results.push({ service: name, path: path.split('/')[0], op: path.split('/')[1], approved: best.approved, msg: (best.msg || '').slice(0, 90) });
-      }
+        return { service: name, path: path.split('/')[0], op: path.split('/')[1], approved: best.approved, msg: (best.msg || '').slice(0, 90) };
+      }));
       res.setHeader('Cache-Control', 'no-store');
       res.statusCode = 200;
       return res.end(JSON.stringify({ ok: true, probe: true, approvedCount: results.filter((r) => r.approved).length, results }, null, 2));
