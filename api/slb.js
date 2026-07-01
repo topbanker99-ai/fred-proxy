@@ -39,8 +39,11 @@ module.exports = async (req, res) => {
       return res.end(JSON.stringify({ ok: false, error: '허용되지 않은 op: ' + op, allowed: ALLOWED_OP }));
     }
 
+    // op·serviceKey·내부예약어를 제외한 모든 쿼리 파라미터를 그대로 전달(passthrough)
+    const RESERVED = ['op', 'serviceKey', 'servicekey'];
     const sp = new URLSearchParams();
-    PASS.forEach((k) => { const v = get(k); if (v != null && v !== '') sp.set(k, v); });
+    params.forEach((v, k) => { if (RESERVED.indexOf(k) === -1 && v !== '') sp.set(k, v); });
+    if (req.query) Object.keys(req.query).forEach((k) => { if (RESERVED.indexOf(k) === -1 && !sp.has(k) && req.query[k] !== '') sp.set(k, req.query[k]); });
     if (!sp.has('numOfRows')) sp.set('numOfRows', '100');
     if (!sp.has('pageNo')) sp.set('pageNo', '1');
 
