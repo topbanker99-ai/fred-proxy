@@ -30,10 +30,13 @@ function keyCandidates(raw) {
   try { if (raw.indexOf('%') >= 0) decoded = decodeURIComponent(raw); } catch (e) {}
   return [['encoded', encodeURIComponent(decoded)], ['asis', raw]];
 }
-async function callGoKr(url) {
+async function callGoKr(url, timeoutMs) {
   let status = 0, text = '';
-  try { const r = await fetch(url, { headers: { accept: 'application/json' } }); status = r.status; text = await r.text(); }
-  catch (e) { return { ok: false, status: 'fetch_err', msg: String(e).slice(0, 120) }; }
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try { const r = await fetch(url, { headers: { accept: 'application/json' }, signal: ctrl ? ctrl.signal : undefined }); status = r.status; text = await r.text(); }
+  catch (e) { if (timer) clearTimeout(timer); return { ok: false, status: 'fetch_err', resultMsg: (e && e.name === 'AbortError' ? 'timeout' : String(e)).slice(0, 120) }; }
+  if (timer) clearTimeout(timer);
   let j = null; try { j = JSON.parse(text); } catch (e) {}
   const hdr = j && j.response && j.response.header;
   const okResult = hdr && (hdr.resultCode === '00' || /NORMAL/i.test(hdr.resultMsg || ''));
@@ -61,16 +64,17 @@ module.exports = async (req, res) => {
     // ── 진단 모드: /api/krx?probe=1 — 금융위 계열 서비스별 키 승인 여부 확인 ──
     if (get('probe')) {
       const cands = keyCandidates(raw);
-      // 서비스별로 키 후보를 순차 시도하되, 서비스들은 병렬(Promise.all)로 — 15초 내 완료
+      // 1) 작동하는 키 형태를 주식시세(이미 승인)로 1회 확정 → 이후 그 키로만 병렬 조회
+      let keyParam = cands[0][1];
+      for (const [, kp] of cands) {
+        const r = await callGoKr(`${BASE}/getStockPriceInfo?serviceKey=${kp}&numOfRows=1&pageNo=1&resultType=json`, 8000);
+        if (r.ok) { keyParam = kp; break; }
+      }
+      // 2) 단일 키로 각 서비스 병렬 조회(각 6초 타임아웃) — 15초 내 완료
       const results = await Promise.all(PROBE_SERVICES.map(async ([name, path]) => {
-        let best = null;
-        for (const [label, keyParam] of cands) {
-          const url = `${ROOT}/${path}?serviceKey=${keyParam}&numOfRows=1&pageNo=1&resultType=json`;
-          const r = await callGoKr(url);
-          if (r.ok) { best = { approved: true, msg: r.resultMsg }; break; }
-          if (!best) best = { approved: false, msg: r.resultMsg };
-        }
-        return { service: name, path: path.split('/')[0], op: path.split('/')[1], approved: best.approved, msg: (best.msg || '').slice(0, 90) };
+        const url = `${ROOT}/${path}?serviceKey=${keyParam}&numOfRows=1&pageNo=1&resultType=json`;
+        const r = await callGoKr(url, 6000);
+        return { service: name, path: path.split('/')[0], op: path.split('/')[1], approved: r.ok, msg: (r.resultMsg || '').slice(0, 90) };
       }));
       res.setHeader('Cache-Control', 'no-store');
       res.statusCode = 200;
