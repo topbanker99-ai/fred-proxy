@@ -44,8 +44,7 @@ module.exports = async (req, res) => {
     const sp = new URLSearchParams();
     params.forEach((v, k) => { if (RESERVED.indexOf(k) === -1 && v !== '') sp.set(k, v); });
     if (req.query) Object.keys(req.query).forEach((k) => { if (RESERVED.indexOf(k) === -1 && !sp.has(k) && req.query[k] !== '') sp.set(k, req.query[k]); });
-    if (!sp.has('numOfRows')) sp.set('numOfRows', '100');
-    if (!sp.has('pageNo')) sp.set('pageNo', '1');
+    // SlbSvc 오퍼레이션은 numOfRows/pageNo를 명세에 두지 않아 자동 주입 금지(있으면 INVALID). 클라이언트가 보낸 값만 전달.
 
     // 키 형태(Decoding/Encoding) 두 후보 순차 시도
     let decoded = raw;
