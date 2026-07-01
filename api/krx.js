@@ -4,10 +4,41 @@
 //   - 키는 Decoding/Encoding 어느 쪽이든 대응(%) 포함 여부로 판별.
 // fred.js / quote.js / indices.js / kr.js 와 독립.
 
-const BASE = 'https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService';
+const ROOT = 'https://apis.data.go.kr/1160100/service';
+const BASE = ROOT + '/GetStockSecuritiesInfoService';
 const ALLOWED_OP = ['getStockPriceInfo', 'getStockMarketInfo'];
 // 패스스루 허용 파라미터(데이터포털 표준)
 const PASS = ['numOfRows', 'pageNo', 'basDt', 'beginBasDt', 'endBasDt', 'likeSrtnCd', 'likeIsinCd', 'likeItmsNm', 'mrktCls', 'isinCd', 'srtnCd', 'itmsNm', 'beginVs', 'endVs'];
+
+// 진단(probe)용: 금융위원회(1160100) 계열 대표 서비스/오퍼레이션 후보 — 키 승인 여부 확인용
+const PROBE_SERVICES = [
+  ['주식시세정보',       'GetStockSecuritiesInfoService/getStockPriceInfo'],
+  ['수탁계좌정보',       'GetStockSecuritiesInfoService/getStockMarketInfo'],
+  ['KRX상장종목정보',    'GetKrxListedInfoService/getItemInfo'],
+  ['증권상품시세정보',   'GetSecuritiesProductInfoService/getSecuritiesProductInfo'],
+  ['일반상품시세정보',   'GetGeneralProductInfoService/getGeneralProductInfo'],
+  ['파생상품시세정보',   'GetDerivativesProductInfoService/getDerivativesPriceInfo'],
+  ['채권시세정보',       'GetBondSecuritiesInfoService/getBondPriceInfo'],
+  ['기업기본정보',       'GetCorpBasicInfoService_V2/getCorpOutline'],
+  ['주식발행정보',       'GetStockIssuInfoService/getIssuStockCorpList'],
+  ['주식분포/사고주권',  'GetStockAdvancedInfoService/getStockDivInfo'],
+];
+
+// 서비스키 후보(Decoding/Encoding 자동 판별)
+function keyCandidates(raw) {
+  let decoded = raw;
+  try { if (raw.indexOf('%') >= 0) decoded = decodeURIComponent(raw); } catch (e) {}
+  return [['encoded', encodeURIComponent(decoded)], ['asis', raw]];
+}
+async function callGoKr(url) {
+  let status = 0, text = '';
+  try { const r = await fetch(url, { headers: { accept: 'application/json' } }); status = r.status; text = await r.text(); }
+  catch (e) { return { ok: false, status: 'fetch_err', msg: String(e).slice(0, 120) }; }
+  let j = null; try { j = JSON.parse(text); } catch (e) {}
+  const hdr = j && j.response && j.response.header;
+  const okResult = hdr && (hdr.resultCode === '00' || /NORMAL/i.test(hdr.resultMsg || ''));
+  return { ok: !!okResult, status, resultMsg: hdr ? hdr.resultMsg : (text.slice(0, 120) || null), json: j };
+}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,6 +57,25 @@ module.exports = async (req, res) => {
 
     const params = new URL(req.url, 'http://localhost').searchParams;
     const get = (k) => (req.query && req.query[k] != null ? req.query[k] : params.get(k));
+
+    // ── 진단 모드: /api/krx?probe=1 — 금융위 계열 서비스별 키 승인 여부 확인 ──
+    if (get('probe')) {
+      const cands = keyCandidates(raw);
+      const results = [];
+      for (const [name, path] of PROBE_SERVICES) {
+        let best = null;
+        for (const [label, keyParam] of cands) {
+          const url = `${ROOT}/${path}?serviceKey=${keyParam}&numOfRows=1&pageNo=1&resultType=json`;
+          const r = await callGoKr(url);
+          if (r.ok) { best = { approved: true, via: label, msg: r.resultMsg }; break; }
+          if (!best) best = { approved: false, via: label, status: r.status, msg: r.resultMsg };
+        }
+        results.push({ service: name, path: path.split('/')[0], op: path.split('/')[1], approved: best.approved, msg: (best.msg || '').slice(0, 90) });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.statusCode = 200;
+      return res.end(JSON.stringify({ ok: true, probe: true, approvedCount: results.filter((r) => r.approved).length, results }, null, 2));
+    }
 
     const op = String(get('op') || 'getStockPriceInfo');
     if (ALLOWED_OP.indexOf(op) === -1) {
