@@ -38,9 +38,17 @@ async function callGoKr(url, timeoutMs) {
   catch (e) { if (timer) clearTimeout(timer); return { ok: false, status: 'fetch_err', resultMsg: (e && e.name === 'AbortError' ? 'timeout' : String(e)).slice(0, 120) }; }
   if (timer) clearTimeout(timer);
   let j = null; try { j = JSON.parse(text); } catch (e) {}
-  const hdr = j && j.response && j.response.header;
+  let hdr = j && j.response && j.response.header;
+  // XML(예: SEIBRO 예탁결제원) 응답이면 resultCode/resultMsg를 텍스트에서 추출
+  if (!hdr && /<resultCode>/.test(text)) {
+    const c = (text.match(/<resultCode>([^<]*)<\/resultCode>/) || [])[1];
+    const m = (text.match(/<resultMsg>([^<]*)<\/resultMsg>/) || [])[1];
+    hdr = { resultCode: c, resultMsg: m };
+  }
   const okResult = hdr && (hdr.resultCode === '00' || /NORMAL/i.test(hdr.resultMsg || ''));
-  return { ok: !!okResult, status, resultMsg: hdr ? hdr.resultMsg : (text.slice(0, 120) || null), json: j };
+  // '키 미등록' 계열 메시지가 아니면 승인된 것으로 간주(파라미터 오류 등은 승인 상태)
+  const keyErr = hdr && /NOT.?REGISTERED|SERVICE.?KEY|등록되지/i.test(hdr.resultMsg || '');
+  return { ok: !!okResult, keyOk: hdr ? !keyErr : false, status, resultCode: hdr ? hdr.resultCode : null, resultMsg: hdr ? hdr.resultMsg : (text.slice(0, 120) || null), json: j };
 }
 
 module.exports = async (req, res) => {
@@ -76,9 +84,16 @@ module.exports = async (req, res) => {
         const r = await callGoKr(url, 6000);
         return { service: name, path: path.split('/')[0], op: path.split('/')[1], approved: r.ok, msg: (r.resultMsg || '').slice(0, 90) };
       }));
+      // 3) 예탁결제원(SEIBRO) 증권대차서비스 — 별도 호스트, XML. 파라미터 오류라도 키가 등록됐으면 approved.
+      const seibro = await Promise.all([
+        ['증권대차_종목별대차거래', 'https://api.seibro.or.kr/openapi/service/SlbSvc/getSlbDealingByIsin'],
+      ].map(async ([name, url]) => {
+        const r = await callGoKr(`${url}?serviceKey=${keyParam}&numOfRows=1`, 6000);
+        return { service: name, host: 'api.seibro.or.kr', op: url.split('/').pop(), approved: r.keyOk, resultCode: r.resultCode, msg: (r.resultMsg || '').slice(0, 90) };
+      }));
       res.setHeader('Cache-Control', 'no-store');
       res.statusCode = 200;
-      return res.end(JSON.stringify({ ok: true, probe: true, approvedCount: results.filter((r) => r.approved).length, results }, null, 2));
+      return res.end(JSON.stringify({ ok: true, probe: true, approvedCount: results.filter((r) => r.approved).length, results, seibro }, null, 2));
     }
 
     const op = String(get('op') || 'getStockPriceInfo');
